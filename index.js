@@ -530,6 +530,8 @@ app.post("/api/property-comps", async (req, res) => {
     const requestBody = req.body;
     console.log("payload", requestBody);
 
+    connection = await mysql.createConnection(dbConfig);
+
     if (
       !requestBody.id ||
       !requestBody.fulladdress ||
@@ -540,6 +542,74 @@ app.post("/api/property-comps", async (req, res) => {
         message: "userId and full address details are required.",
       });
     }
+
+    // Check if property already exists
+    const [existingRows] = await connection.execute(
+      "SELECT * FROM userActions WHERE userId = ? AND comps = ?",
+      [requestBody.id, requestBody.fulladdress.address]
+    );
+
+    if (existingRows.length > 0) {
+      console.log("find");
+      // Call the Real Estate API
+      const propertyCompsResponse = await axios.post(
+        propertyCompsApiUrl,
+        { address: requestBody.fulladdress.address },
+        {
+          headers: {
+            "x-api-key": realEstateApiKey,
+            "Content-Type": "application/json",
+          },
+        }
+      );
+
+      console.log("Real Estate API Response:", propertyCompsResponse.data);
+      console.log("existing row", existingRows);
+
+      // Send success response with API data
+      return res.status(201).json({
+        success: true,
+        message: "Comps data record found in DB.",
+        data: propertyCompsResponse.data,
+        existingData: existingRows,
+      });
+    }
+
+    // Check credit
+    const [userRows] = await connection.execute(
+      "SELECT credit FROM user WHERE userId = ?",
+      [requestBody.id]
+    );
+
+    if (userRows.length === 0) {
+      await connection.end();
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found." });
+    }
+
+    const currentCredit = userRows[0].credit;
+
+    if (currentCredit < 5) {
+      return res.status(201).json({
+        success: true,
+        message: "Insufficient Credit",
+      });
+    }
+
+    // Reduce the user's credit
+    const [result] = await connection.execute(
+      "UPDATE user SET credit = credit - ? WHERE userId = ?",
+      ["5", requestBody.id]
+    );
+
+    // If skiptrace doesn't exist, insert a new record in `userActions` table
+    const [insertResult] = await connection.execute(
+      "INSERT INTO userActions (userId, comps, date) VALUES (?, ?, ?)",
+      [requestBody.id, requestBody.fulladdress.address, new Date()]
+    );
+
+    console.log("Inserted new record into userActions:", insertResult.insertId);
 
     // Call the Property Comparables API
     const propertyCompsResponse = await axios.post(
@@ -556,7 +626,7 @@ app.post("/api/property-comps", async (req, res) => {
     // Send success response with API data
     return res.status(201).json({
       success: true,
-      message: "Comps record found and API data fetched.",
+      message: "Comps record call from API.",
       data: propertyCompsResponse.data,
     });
   } catch (error) {
@@ -656,6 +726,52 @@ app.post("/api/reduce-credit", async (req, res) => {
     });
   } catch (error) {
     console.error("Error reducing credit:", error.message);
+    res.status(500).json({ success: false, message: "Internal server error." });
+  }
+});
+
+//Reduce Credit
+app.post("/api/check-userAction", async (req, res) => {
+  try {
+    const requestBody = req.body;
+    console.log("payload", requestBody);
+
+    connection = await mysql.createConnection(dbConfig);
+
+    if (
+      !requestBody.id ||
+      !requestBody.fulladdress ||
+      !requestBody.fulladdress.address
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "userId and full address details are required.",
+      });
+    }
+
+    // Check if property already exists
+    const [existingRows] = await connection.execute(
+      "SELECT * FROM userActions WHERE userId = ? AND comps = ?",
+      [requestBody.id, requestBody.fulladdress.address]
+    );
+
+    if (existingRows.length > 0) {
+      console.log("find");
+
+      // Send success response with API data
+      return res.status(201).json({
+        success: true,
+        message: "Comps data record found in DB.",
+        existingData: existingRows,
+      });
+    }
+    return res.status(201).json({
+      success: false,
+      message: "Comps data record not found in DB.",
+      existingData: existingRows,
+    });
+  } catch (error) {
+    console.error("Error checking userActions:", error.message);
     res.status(500).json({ success: false, message: "Internal server error." });
   }
 });
